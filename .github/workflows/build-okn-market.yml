@@ -1,1 +1,130 @@
+name: Build OKN Market APK
 
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'OKN_MARKET_V*_SOURCE.zip'
+      - '.github/workflows/build-okn-market.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Select latest OKN Market source ZIP
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP_FILE="$(ls -1 OKN_MARKET_V*_SOURCE.zip 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -z "$ZIP_FILE" ]; then
+            echo "No OKN_MARKET_V*_SOURCE.zip found in repository root"
+            exit 1
+          fi
+          VERSION="$(basename "$ZIP_FILE" | sed -E 's/^OKN_MARKET_(V[0-9]+)_SOURCE\.zip$/\1/')"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "$(basename "$ZIP_FILE")" ]; then
+            echo "Unable to parse version from $ZIP_FILE"
+            exit 1
+          fi
+          echo "zip=$ZIP_FILE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Selected $ZIP_FILE ($VERSION)"
+
+      - name: Extract source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf extracted build_app
+          mkdir -p extracted
+          unzip -q "${{ steps.source.outputs.zip }}" -d extracted
+          SOURCE_DIR="$(find extracted -maxdepth 1 -type d -name 'OKN_MARKET_V*_SOURCE' | sort -V | tail -n 1)"
+          if [ -z "$SOURCE_DIR" ]; then
+            echo "Source directory not found inside ZIP"
+            find extracted -maxdepth 2 -type f -print
+            exit 1
+          fi
+          echo "$SOURCE_DIR" > /tmp/okn_market_source_dir
+          echo "Source directory: $SOURCE_DIR"
+
+      - name: Create clean Flutter Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter create \
+            --no-pub \
+            --platforms=android \
+            --org com.okn \
+            --project-name okn_market \
+            build_app
+
+      - name: Apply OKN Market source and native Android patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DIR="$(cat /tmp/okn_market_source_dir)"
+
+          cp "$SOURCE_DIR/pubspec.yaml" build_app/pubspec.yaml
+          cp "$SOURCE_DIR/analysis_options.yaml" build_app/analysis_options.yaml
+
+          rm -rf build_app/lib
+          cp -R "$SOURCE_DIR/lib" build_app/lib
+
+          KOTLIN_DIR="build_app/android/app/src/main/kotlin/com/okn/okn_market"
+          mkdir -p "$KOTLIN_DIR"
+          rm -f "$KOTLIN_DIR/MainActivity.kt"
+          cp "$SOURCE_DIR/android_patch/MainActivity.kt" "$KOTLIN_DIR/MainActivity.kt"
+          cp "$SOURCE_DIR/android_patch/MarketNotificationListenerService.kt" \
+             "$KOTLIN_DIR/MarketNotificationListenerService.kt"
+          cp "$SOURCE_DIR/android_patch/AndroidManifest.xml" \
+             build_app/android/app/src/main/AndroidManifest.xml
+
+      - name: Flutter pub get
+        working-directory: build_app
+        run: flutter pub get
+
+      - name: Flutter analyze
+        working-directory: build_app
+        run: flutter analyze
+
+      - name: Build release APK
+        working-directory: build_app
+        run: flutter build apk --release
+
+      - name: Prepare APK artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.source.outputs.version }}"
+          mkdir -p release
+          cp build_app/build/app/outputs/flutter-apk/app-release.apk \
+             "release/OKN_MARKET_${VERSION}_RELEASE.apk"
+          sha256sum "release/OKN_MARKET_${VERSION}_RELEASE.apk" \
+             > "release/OKN_MARKET_${VERSION}_RELEASE.apk.sha256"
+          ls -lh release/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OKN_MARKET_${{ steps.source.outputs.version }}_APK
+          path: release/
+          if-no-files-found: error
+          retention-days: 30
