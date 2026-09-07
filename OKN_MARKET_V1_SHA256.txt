@@ -1,0 +1,2 @@
+aecfd5f0ade4b0dbe68b5c9a219f752f4934816caaf913fe0f2a8a5ea869f10c  OKN_MARKET_V1_SOURCE.zip
+019db8b102d15744cd3dff02bd8382fa61b3c306faae057700cc0fe054c0caf3  build-okn-market.yml
